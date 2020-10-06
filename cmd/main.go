@@ -1,8 +1,10 @@
 package main
 
 import (
+	"net/http"
 	"os"
 	"time"
+	chatting "ws-chatting"
 
 	"github.com/rs/zerolog"
 )
@@ -13,8 +15,12 @@ func main() {
 		TimeFormat: time.Stamp,
 	}).With().Timestamp().Logger()
 
-	// if len(os.Args) != 1 {
+	s := chatting.NewServer(log)
 
-	// }
+	log.Info().Msg("server started on port 8080")
 
+	err := http.ListenAndServe(":8080", s)
+	if err != http.ErrServerClosed {
+		log.Fatal().Err(err).Msg("server terminated")
+	}
 }

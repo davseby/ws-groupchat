@@ -14,18 +14,29 @@ import (
 type Server struct {
 	log zerolog.Logger
 
-	writeCh chan string
+	writeCh chan Message
 
 	mu    sync.RWMutex
 	users map[string]*websocket.Conn
+
+	writer bool
 }
 
-// New creates fresh instance of server.
-func New(log zerolog.Logger) *Server {
-	return &Server{
-		log:   log,
-		users: make(map[string]*websocket.Conn),
+// Message holds all data related to sent text.
+type Message struct {
+	Username string `json:"username"`
+	Text     string `json:"text"`
+}
+
+// NewServer creates fresh instance of server.
+func NewServer(log zerolog.Logger) *Server {
+	s := &Server{
+		log:     log,
+		users:   make(map[string]*websocket.Conn),
+		writeCh: make(chan Message),
 	}
+
+	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,27 +72,46 @@ func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.Close(websocket.StatusInternalError, "internal error")
 
+	s.mu.Lock()
+	s.users[user] = c
+	s.mu.Unlock()
+
 	s.log.Info().Msg("connection established")
 	defer s.log.Info().Msg("connection closed")
 
 	ctx := context.Background()
 
-	go s.handleWrite(ctx)
+	if !s.writer {
+		go s.handleWrite(ctx)
+	}
 
 	for {
-		s.handleRead(ctx)
+		if err := s.handleRead(ctx, user, c); err != nil {
+			return
+		}
 	}
 }
 
 func (s *Server) handleWrite(ctx context.Context) {
+	s.writer = true
+
+	defer func() {
+		s.writer = false
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg := <-s.writeCh:
 			for user, c := range s.users {
-				err := c.Write(ctx, websocket.MessageText, []byte(msg))
-				if err != nil {
+				if user == msg.Username {
+					continue
+				}
+
+				if err := wsjson.Write(ctx, c, msg); err != nil {
+					s.log.Err(err).Msg("during writing process")
+
 					s.mu.Lock()
 					s.unsubscribe(user)
 					s.mu.Unlock()
@@ -91,17 +121,24 @@ func (s *Server) handleWrite(ctx context.Context) {
 	}
 }
 
-func (s *Server) handleRead(ctx context.Context) {
-	var msg string
+func (s *Server) handleRead(ctx context.Context, user string, c *websocket.Conn) error {
+	var data Message
 
-	for user, c := range s.users {
-		err := wsjson.Read(ctx, c, &msg)
-		if err != nil {
-			s.mu.Lock()
-			s.unsubscribe(user)
-			s.mu.Unlock()
-		}
+	if err := wsjson.Read(ctx, c, &data); err != nil {
+		s.mu.Lock()
+		s.unsubscribe(user)
+		s.mu.Unlock()
+
+		return err
 	}
+
+	data.Username = user
+
+	s.log.Info().Msgf("received %s message: %s", data.Username, data.Text)
+
+	s.writeCh <- data
+
+	return nil
 }
 
 func (s *Server) unsubscribe(user string) {
