@@ -1,4 +1,4 @@
-package chatting
+package chatroom
 
 import (
 	"context"
@@ -19,10 +19,10 @@ type Server struct {
 	mu    sync.RWMutex
 	users map[string]*websocket.Conn
 
-	writer bool
+	writerEnabled bool
 }
 
-// Message holds all data related to sent text.
+// Message holds all data that is sent using websockets.
 type Message struct {
 	Username string `json:"username"`
 	Text     string `json:"text"`
@@ -48,7 +48,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFoundHandler().ServeHTTP(w, r)
 }
 
-// handleWs Conn upgrades incoming websocket connections.
+// handleWsConn upgrades incoming websocket connections.
 func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("username")
 	if user == "" {
@@ -81,7 +81,7 @@ func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 
 	ctx := context.Background()
 
-	if !s.writer {
+	if !s.writerEnabled {
 		go s.handleWrite(ctx)
 	}
 
@@ -92,11 +92,12 @@ func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+//handleWrite handles sending messages to all clients.
 func (s *Server) handleWrite(ctx context.Context) {
-	s.writer = true
+	s.writerEnabled = true
 
 	defer func() {
-		s.writer = false
+		s.writerEnabled = false
 	}()
 
 	for {
@@ -121,6 +122,7 @@ func (s *Server) handleWrite(ctx context.Context) {
 	}
 }
 
+// handleRead handles reading all incoming websocket messages.
 func (s *Server) handleRead(ctx context.Context, user string, c *websocket.Conn) error {
 	var data Message
 
@@ -141,6 +143,7 @@ func (s *Server) handleRead(ctx context.Context, user string, c *websocket.Conn)
 	return nil
 }
 
+// unsubscribe removes user from subscribed users list.
 func (s *Server) unsubscribe(user string) {
 	c, ok := s.users[user]
 	if !ok {

@@ -1,4 +1,4 @@
-module ws-chatting
+module ws-chatroom
 
 go 1.15
 
