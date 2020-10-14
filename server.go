@@ -16,9 +16,10 @@ type Server struct {
 
 	writeCh chan Message
 
-	mu    sync.RWMutex
-	users map[string]*websocket.Conn
+	userMu sync.RWMutex
+	users  map[string]*websocket.Conn
 
+	writerMu      sync.RWMutex
 	writerEnabled bool
 }
 
@@ -50,15 +51,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // handleWsConn upgrades incoming websocket connections.
 func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("username")
-	if user == "" {
+	username := r.URL.Query().Get("username")
+	if username == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	s.mu.RLock()
-	_, ok := s.users[user]
-	s.mu.RUnlock()
+	s.userMu.RLock()
+	_, ok := s.users[username]
+	s.userMu.RUnlock()
 
 	if ok {
 		w.WriteHeader(http.StatusBadRequest)
@@ -72,21 +73,23 @@ func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.Close(websocket.StatusInternalError, "internal error")
 
-	s.mu.Lock()
-	s.users[user] = c
-	s.mu.Unlock()
+	s.userMu.Lock()
+	s.users[username] = c
+	s.userMu.Unlock()
 
 	s.log.Info().Msg("connection established")
 	defer s.log.Info().Msg("connection closed")
 
 	ctx := context.Background()
 
+	s.writerMu.RLock()
 	if !s.writerEnabled {
 		go s.handleWrite(ctx)
 	}
+	s.writerMu.RUnlock()
 
 	for {
-		if err := s.handleRead(ctx, user, c); err != nil {
+		if err := s.handleRead(ctx, username, c); err != nil {
 			return
 		}
 	}
@@ -94,10 +97,14 @@ func (s *Server) handleWsConn(w http.ResponseWriter, r *http.Request) {
 
 //handleWrite handles sending messages to all clients.
 func (s *Server) handleWrite(ctx context.Context) {
+	s.writerMu.Lock()
 	s.writerEnabled = true
+	s.writerMu.Unlock()
 
 	defer func() {
+		s.writerMu.Lock()
 		s.writerEnabled = false
+		s.writerMu.Unlock()
 	}()
 
 	for {
@@ -105,36 +112,38 @@ func (s *Server) handleWrite(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-s.writeCh:
-			for user, c := range s.users {
-				if user == msg.Username {
+			s.userMu.RLock()
+			for username, c := range s.users {
+				if username == msg.Username {
 					continue
 				}
 
 				if err := wsjson.Write(ctx, c, msg); err != nil {
 					s.log.Err(err).Msg("during writing process")
 
-					s.mu.Lock()
-					s.unsubscribe(user)
-					s.mu.Unlock()
+					s.userMu.Lock()
+					s.unsubscribe(username)
+					s.userMu.Unlock()
 				}
 			}
+			s.userMu.RUnlock()
 		}
 	}
 }
 
 // handleRead handles reading all incoming websocket messages.
-func (s *Server) handleRead(ctx context.Context, user string, c *websocket.Conn) error {
+func (s *Server) handleRead(ctx context.Context, username string, c *websocket.Conn) error {
 	var data Message
 
 	if err := wsjson.Read(ctx, c, &data); err != nil {
-		s.mu.Lock()
-		s.unsubscribe(user)
-		s.mu.Unlock()
+		s.userMu.Lock()
+		s.unsubscribe(username)
+		s.userMu.Unlock()
 
 		return err
 	}
 
-	data.Username = user
+	data.Username = username
 
 	s.log.Info().Msgf("received %s message: %s", data.Username, data.Text)
 
@@ -144,12 +153,12 @@ func (s *Server) handleRead(ctx context.Context, user string, c *websocket.Conn)
 }
 
 // unsubscribe removes user from subscribed users list.
-func (s *Server) unsubscribe(user string) {
-	c, ok := s.users[user]
+func (s *Server) unsubscribe(username string) {
+	c, ok := s.users[username]
 	if !ok {
 		return
 	}
 
 	c.Close(websocket.StatusNormalClosure, "")
-	delete(s.users, user)
+	delete(s.users, username)
 }
