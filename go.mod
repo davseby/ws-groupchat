@@ -1,4 +1,4 @@
-module ws-chatroom
+module ws-groupchat
 
 go 1.15
 

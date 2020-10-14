@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"os"
 	"time"
-	chatroom "ws-chatroom"
+	groupchat "ws-groupchat"
 
 	"github.com/rs/zerolog"
 )
@@ -15,7 +15,7 @@ func main() {
 		TimeFormat: time.Stamp,
 	}).With().Timestamp().Logger()
 
-	s := chatroom.NewServer(log)
+	s := groupchat.NewServer(log)
 
 	log.Info().Msg("server started on port 8080")
 
